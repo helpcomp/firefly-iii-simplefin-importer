@@ -6,7 +6,7 @@ Use [Firefly III](https://github.com/firefly-iii/firefly-iii) to store transacti
 
 ## Credits
 
-[lychnos](https://github.com/davidschlachter/lychnos) - For the Firefly III Go Backend
+[lychnos](https://github.com/davidschlachter/lychnos) - For the Firefly III Go Backend, and the original source
 
 [firefly_iii_exporter](https://github.com/kinduff/firefly_iii_exporter) - For the multithreaded Prometheus idea
 
@@ -24,34 +24,22 @@ Example `config.yml`:
 ```
 ---
   config:
-    enable_reconciliation: false
-    loopback_duration: 10d
+    enable_reconciliation: false  # Automatic Reconciliation
+    loopback_duration: 10d        # How many days of transactions to pull from Simplefin
     non_asset_accounts:
-      127: reconciliation
-      128: reconciliation
-      108: withdrawal
-      109: withdrawal
-      110: withdrawal
-      111: withdrawal
-      112: withdrawal
-      113: withdrawal
-      114: withdrawal
-      115: withdrawal
-      116: withdrawal
-      208: withdrawal
-
-  openai:
-      key: <OPEN AI KEY>
-
+      100: reconciliation
+      101: withdrawal
+  # Manually categorizes transactions, and bypasses OpenAI Auto-Categorization
   transactionBypass:
-    - I AM A TRANSACTION NAME:
-        company: "Spending"
+    - ONLINE PURCHASE:
+        company: "GitHub"
         category: "Shopping"
         source_account: "1"
         destination_account: "25"
         type: "transfer"
-  # Accounts
-  # <SimpleFin Account ID>:<Firefly Asset ID>
+    - MONEY TRANSFER:
+          skip: true
+  # Accounts: Simplefin Account ID: Firefly Asset ID
   accounts:
-    ACT-00000000-0000-0000-0000-00000000000: 100
+    ACT-00000-0000-0000-0000-0000000000: 1
 ```

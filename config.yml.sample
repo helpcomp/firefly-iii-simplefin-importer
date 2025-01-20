@@ -1,0 +1,20 @@
+---
+  config:
+    enable_reconciliation: false  # Automatic Reconciliation
+    loopback_duration: 10d        # How many days of transactions to pull from Simplefin
+    non_asset_accounts:
+      100: reconciliation
+      101: withdrawal
+  # Manually categorizes transactions, and bypasses OpenAI Auto-Categorization
+  transactionBypass:
+    - ONLINE PURCHASE:
+        company: "GitHub"
+        category: "Shopping"
+        source_account: "1"
+        destination_account: "25"
+        type: "transfer"
+    - MONEY TRANSFER:
+          skip: true
+  # Accounts: Simplefin Account ID: Firefly Asset ID
+  accounts:
+    ACT-00000-0000-0000-0000-0000000000: 1
