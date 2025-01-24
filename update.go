@@ -20,8 +20,7 @@ import (
 )
 
 const (
-	_noname            = "(no name)"
-	updateTransactions = true
+	_noname = "(no name)"
 )
 
 type OpenAIResponse struct {
@@ -38,7 +37,7 @@ type ExtractedData struct {
 
 var bypassBalanceCheck []string
 
-// startUpdate Handles updating account transactions and reconciliations. Pulls data from Simplefin, then uploads to Firefly III
+// startUpdate initializes the process to update accounts and reconcile balances using Simplefin API and Firefly API.
 func startUpdate() {
 	// Variable Setup
 	var err error
@@ -72,6 +71,10 @@ func startUpdate() {
 		log.Error().Msgf("%s", acctErr)
 		prom.APIErrors.Simplefin++
 	}
+
+	// Remove non-existent transactions before looping through new / updated transactions
+	// This also prevents balance mismatch
+	RemoveNonExistantTransactions(simpleFinAcctResp)
 
 	// Loop through Simplefin Accounts
 	for _, acct := range simpleFinAcctResp.Accounts {
@@ -131,10 +134,10 @@ func startUpdate() {
 			log.Error().Msgf("Balance Mismatch for %s! $%s (SimpleFin) != $%s (FireFly). Reconciliation Recommended!", currentAccount.Attributes.Name, acct.Balance, currentAccount.Attributes.CurrentBalance.Sub(pendingBalance))
 		}
 	}
-	RemoveNonExistantTransactions(simpleFinAcctResp)
 }
 
-// DoesTransactionExist Checks if the given transaction already exists in Firefly
+// DoesTransactionExist checks if a given transaction exists in Firefly within a specific time range.
+// It returns whether the transaction exists, whether an update is needed, and the ID of the matching transaction if found.
 func DoesTransactionExist(newTrans firefly.Transaction) (exists bool, update bool, oldTransactionID string) {
 	t, err := duration.ParseDuration(c.AppConfig.LoopbackDuration)
 	now := time.Now()
@@ -176,9 +179,13 @@ func DoesTransactionExist(newTrans firefly.Transaction) (exists bool, update boo
 	return false, false, ""
 }
 
-// CheckTransactions Loops through all the Simplefin Accounts and their gathered transactions. Then Create a new Firefly Transaction, or update an existing Firefly transaction
-//
-//nolint:funlen
+// CheckTransactions processes transactions of a given Simplefin account and reconciles them with Firefly's transactions.
+// It determines if there are pending transactions and calculates the pending balance for the account.
+// Parameters:
+// - acct: a Simplefin account containing transaction and balance details.
+// Returns:
+// - hasPendingTransactions: indicates if there are pending transactions in the account.
+// - pendingBalance: the total balance associated with pending transactions.
 func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pendingBalance decimal.Decimal) {
 	var err error
 	skipTransaction := false
@@ -226,7 +233,7 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 		}
 
 		// Debug Mode - Skip posting and updating transactions
-		if !updateTransactions {
+		if cli.DoNotUpdateTransactions {
 			continue
 		}
 
@@ -259,7 +266,7 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 		}
 
 		// Transaction is pending and already exists in Simplefin, this will need to be subtracted from SimpleFin's balance
-		if trans.Pending && exists {
+		if trans.Pending {
 			pendingBalance = pendingBalance.Add(trans.Amount)
 		}
 
@@ -291,7 +298,9 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 	return accountHasPending, pendingBalance
 }
 
-// UpdateTransaction Updates a pending transaction to a finalized (Posted) transaction
+// UpdateTransaction updates an existing transaction in Firefly by applying updated details such as source, destination, and category.
+// It uses the provided simplefinTransaction to extract company and category data and modifies the ffTransaction accordingly.
+// The updated transaction is then sent to Firefly identified by the oldTransactionID. Returns an error if the update fails.
 func UpdateTransaction(oldTransactionID string, ffTransaction firefly.Transaction, simplefinTransaction simplefin.Transactions) error {
 	extracted := ExtractCompanyAndCategory(simplefinTransaction)
 
@@ -308,7 +317,9 @@ func UpdateTransaction(oldTransactionID string, ffTransaction firefly.Transactio
 	return ff.UpdateTransaction(oldTransactionID, ffTransaction)
 }
 
-// PostTransaction Creates a new Firefly Transaction
+// PostTransaction processes transactions between SimpleFIN and Firefly and creates or skips them based on specific criteria.
+// It extracts merchant and category information, updates transaction details, and applies configuration rules as needed.
+// Returns true if the transaction is skipped; otherwise, attempts to create the transaction and returns success status or an error.
 func PostTransaction(simplefinTrans simplefin.Transactions, ffTransaction firefly.Transaction) (bool, error) {
 	extracted := ExtractCompanyAndCategory(simplefinTrans)
 
@@ -354,7 +365,9 @@ func PostTransaction(simplefinTrans simplefin.Transactions, ffTransaction firefl
 	return false, ff.CreateTransaction(ffTransaction)
 }
 
-// GetAccount Gets Firefly Account based on the given accountID
+// GetAccount retrieves an account from Firefly III based on the provided account ID.
+// Returns the matching account or an error if not found.
+// Logs errors and increments Prometheus counters for API error tracking.
 func GetAccount(accountID string) (account firefly.Account, err error) {
 	accounts, err := ff.CachedAccounts()
 	if err != nil {
@@ -372,9 +385,8 @@ func GetAccount(accountID string) (account firefly.Account, err error) {
 	return firefly.Account{}, errors.New("Unable to find an account with the ID of " + accountID)
 }
 
-// ExtractCompanyAndCategory Uses ChatGPT to extract the Payee and the Category from the given transaction. Returns a JSON object
-//
-//nolint:funlen
+// ExtractCompanyAndCategory processes a transaction to extract the company and category details for classification.
+// It uses predefined bypass rules and optionally integrates with OpenAI for enhanced categorization insights.
 func ExtractCompanyAndCategory(transaction simplefin.Transactions) ExtractedData {
 	var extracted = ExtractedData{
 		Company:   _noname,
@@ -470,7 +482,9 @@ func ExtractCompanyAndCategory(transaction simplefin.Transactions) ExtractedData
 	return extracted
 }
 
-// FindCategoryID Gets the Category ID from the given category name
+// FindCategoryID searches for a category by name in a list of firefly.Category and returns its ID as a string.
+// The function removes emojis and leading spaces from both input and category names before comparison.
+// Returns an empty string if no match is found.
 func FindCategoryID(categoryName string, categories []firefly.Category) string {
 	for _, cat := range categories {
 		if strings.TrimLeft(gomoji.RemoveEmojis(cat.Name), " ") == strings.TrimLeft(gomoji.RemoveEmojis(categoryName), " ") {
@@ -480,6 +494,7 @@ func FindCategoryID(categoryName string, categories []firefly.Category) string {
 	return ""
 }
 
+// RemoveNonExistantTransactions removes Firefly transactions that no longer exist in SimpleFin within a specified time frame.
 func RemoveNonExistantTransactions(accts simplefin.AccountsResponse) {
 	log.Info().Msgf("Checking for non-existant transactions")
 	t, _ := duration.ParseDuration(c.AppConfig.LoopbackDuration)
@@ -507,7 +522,11 @@ func RemoveNonExistantTransactions(accts simplefin.AccountsResponse) {
 				continue
 			}
 			// The Transaction was not found in SimpleFin. It needs to be deleted
-			log.Error().Msgf("Transaction %s doesn't exist in SimpleFin. Removing it.", fireflyTrans.Description)
+			log.Info().Msgf("Transaction %s (%s) doesn't exist in SimpleFin. Removing it.", fireflyTrans.Description, transAttrib.ID)
+			err := ff.DeleteTransaction(transAttrib.ID)
+			if err != nil {
+				log.Error().Err(err).Msgf("Could not delete transaction %s (%s)", fireflyTrans.Description, transAttrib.ID)
+			}
 		}
 	}
 }

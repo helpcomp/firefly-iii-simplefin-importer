@@ -27,14 +27,15 @@ var (
 )
 
 var cli struct {
-	MetricsPath        string `env:"EXPORTER_METRICS_PATH" help:"${env} - Path under which to expose metrics" default:"/metrics"`
-	ListenAddress      string `env:"EXPORTER_LISTEN_ADDRESS" help:"${env} - Address to listen on for web interface and telemetry" default:"9717"`
-	FireflyToken       string `env:"FIREFLY_TOKEN" help:"${env} - Firefly Token" required:""`
-	FireflyBase        string `env:"FIREFLY_URL" help:"${env} - Firefly URL" required:""`
-	SimplefinAccessURL string `env:"SIMPLEFIN_ACCESS_URL" help:"${env} - Simplefin Access URL" required:""`
-	OpenAIAPIKey       string `env:"OPENAI_API_KEY" help:"${env} - API Key for OpenAI. If none is provided, OpenAI support is disabled"`
-	RefreshTime        uint16 `env:"REFRESH_TIME" help:"${env} - Time in minutes for refresh (Default 1440 / 1 day)" default:"1440"`
-	EnablePrometheus   bool   `env:"ENABLE_PROMETHEUS" help:"${env} - Enable Prometheus metrics" default:"true"`
+	MetricsPath             string `env:"EXPORTER_METRICS_PATH" help:"${env} - Path under which to expose metrics" default:"/metrics"`
+	ListenAddress           string `env:"EXPORTER_LISTEN_ADDRESS" help:"${env} - Address to listen on for web interface and telemetry" default:"9717"`
+	FireflyToken            string `env:"FIREFLY_TOKEN" help:"${env} - Firefly Token" required:""`
+	FireflyBase             string `env:"FIREFLY_URL" help:"${env} - Firefly URL" required:""`
+	SimplefinAccessURL      string `env:"SIMPLEFIN_ACCESS_URL" help:"${env} - Simplefin Access URL" required:""`
+	OpenAIAPIKey            string `env:"OPENAI_API_KEY" help:"${env} - API Key for OpenAI. If none is provided, OpenAI support is disabled"`
+	RefreshTime             uint16 `env:"REFRESH_TIME" help:"${env} - Time in minutes for refresh (Default 1440 / 1 day)" default:"1440"`
+	EnablePrometheus        bool   `env:"ENABLE_PROMETHEUS" help:"${env} - Enable Prometheus metrics" default:"true"`
+	DoNotUpdateTransactions bool   `env:"DEBUG_DO_NOT_UPDATE_TRANSACTIONS" help:"${env} - Do not update / post new transactions (Debug)" default:"false"`
 }
 
 func main() {

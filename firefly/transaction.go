@@ -172,6 +172,37 @@ func (f *Firefly) CreateTransaction(t Transaction) error {
 	return nil
 }
 
+// DeleteTransaction deletes a transaction by its ID from the system using a DELETE HTTP request.
+// Returns an error if the transaction ID is invalid, the request fails, or the response status is not 204 No Content.
+func (f *Firefly) DeleteTransaction(transID string) error {
+	// Verify that a transaction ID is provided
+	if transID == "" {
+		return fmt.Errorf("no Transaction ID Provided")
+	}
+
+	const path = "/api/v1/transactions/"
+
+	r, _ := http.NewRequest("DELETE", f.url+path+transID, nil)
+
+	r.Header.Add("Authorization", "Bearer "+f.token)
+	r.Header.Add("Content-Type", "application/json")
+	resp, err := f.client.Do(r)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Error deleting transaction
+	if resp.StatusCode != http.StatusNoContent {
+		return errors.New(fmt.Sprintf("Could not delete transaction, got status %d %s", resp.StatusCode, resp.Status))
+	}
+
+	f.invalidateTransactionsCache() // Clear Transactions cache
+
+	// Successful transaction deletion
+	return nil
+}
+
 func (f *Firefly) UpdateTransaction(transID string, t Transaction) error {
 	if transID == "" {
 		return errors.New("missing Transaction ID")
