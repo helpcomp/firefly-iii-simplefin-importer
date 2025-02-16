@@ -2,8 +2,6 @@
 
 Use [Firefly III](https://github.com/firefly-iii/firefly-iii) to store transactions, and [Simplefin](https://beta-bridge.simplefin.org/) to import transaction data. Also takes advantage of OpenAI to categorize transactions.
 
-**This is NOT meant for production use and may not even work in your scenario. USE AT YOUR OWN RISK.**
-
 ## Credits
 
 [lychnos](https://github.com/davidschlachter/lychnos) - For the Firefly III Go Backend, and the original source
