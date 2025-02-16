@@ -28,6 +28,7 @@ var (
 
 var cli struct {
 	MetricsPath             string `env:"EXPORTER_METRICS_PATH" help:"${env} - Path under which to expose metrics" default:"/metrics"`
+	ConfigPath              string `env:"CONFIG_PATH" help:"${env} - Path to config file" default:"./config.yml"`
 	ListenAddress           string `env:"EXPORTER_LISTEN_ADDRESS" help:"${env} - Address to listen on for web interface and telemetry" default:"9717"`
 	FireflyToken            string `env:"FIREFLY_TOKEN" help:"${env} - Firefly Token" required:""`
 	FireflyBase             string `env:"FIREFLY_URL" help:"${env} - Firefly URL" required:""`
@@ -43,9 +44,11 @@ func main() {
 	//////////
 	kong.Parse(&cli)                                                                             // Kong Parser
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})                               // Logger
-	c = config.InitConfig()                                                                      // Config
+	c = config.InitConfig(cli.ConfigPath)                                                        // Config
 	ff = firefly.New(&http.Client{Timeout: time.Second * 30}, cli.FireflyToken, cli.FireflyBase) // Firefly
 	sfin = simplefin.New(cli.SimplefinAccessURL)                                                 // SimpleFIN
+
+	version.Version = "0.2"
 
 	if cli.OpenAIAPIKey != "" {
 		oai = openai.NewClient(cli.OpenAIAPIKey)
@@ -82,13 +85,13 @@ func main() {
 		}
 	}()
 
-	prometheus.MustRegister(prom.NewExporter(ff))
+	prometheus.MustRegister(prom.NewExporter(ff, cli.ConfigPath))
 	http.Handle(cli.MetricsPath, promhttp.Handler())
 	if cli.MetricsPath != "/" && cli.MetricsPath != "" {
 		landingConfig := web.LandingConfig{
 			Name:        "FireFly III Exporter",
 			Description: "Prometheus Firefly III Exporter",
-			Version:     version.Info(),
+			Version:     version.Print("firefly-iii-simplefin-importer"),
 			Links: []web.LandingLinks{
 				{
 					Address: cli.MetricsPath,

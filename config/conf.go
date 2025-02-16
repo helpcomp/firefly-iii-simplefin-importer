@@ -39,9 +39,9 @@ type TransactionBypassResp struct {
 	Accounts map[string]TransactionInfo `yaml:"transactionBypass"`
 }
 
-func InitConfig() *MasterConfig {
+func InitConfig(path string) *MasterConfig {
 	init := MasterConfig{}
-	init.getConf("config.yml")
+	init.getConf(path)
 	return &init
 }
 func (c *MasterConfig) getConf(file string) *MasterConfig {
