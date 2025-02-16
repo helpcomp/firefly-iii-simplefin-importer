@@ -441,7 +441,7 @@ func ExtractCompanyAndCategory(transaction simplefin.Transactions) ExtractedData
 	}
 
 	// If no OpenAI API Key was provided, return default
-	if cli.OpenAIAPIKey != "" {
+	if cli.OpenAIAPIKey == "" {
 		return extracted
 	}
 

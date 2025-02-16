@@ -23,8 +23,6 @@ var (
 
 	Oai_usage openai.Usage
 
-	Oai_response_failure float64
-
 	mconfig *config.MasterConfig
 
 	APIErrors     APIStruct
@@ -60,9 +58,9 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.categoryBalance
 }
 
-func NewExporter(newFireFly *firefly.Firefly) *Exporter {
+func NewExporter(newFireFly *firefly.Firefly, configPath string) *Exporter {
 	ff = newFireFly
-	mconfig = config.InitConfig()
+	mconfig = config.InitConfig(configPath)
 	return &Exporter{
 		AccountTransactions: prometheus.NewDesc(
 			prometheus.BuildFQName(
