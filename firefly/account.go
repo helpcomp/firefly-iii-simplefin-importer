@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/httperror"
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
-	"log"
+	"io"
 	"net/http"
 	"regexp"
 )
@@ -41,7 +42,7 @@ func (f *Firefly) HandleAccount(w http.ResponseWriter, req *http.Request) {
 		}
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
-		fmt.Fprintf(w, "Unsupported method %s", req.Method)
+		_, _ = fmt.Fprintf(w, "Unsupported method %s", req.Method)
 	}
 }
 
@@ -68,7 +69,11 @@ func (f *Firefly) listAccounts(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(accounts)
+	err = json.NewEncoder(w).Encode(accounts)
+	if err != nil {
+		log.Err(err).Msg("Failed to encode accounts")
+		return
+	}
 }
 
 func (f *Firefly) ListAccounts(accountType string) ([]Account, error) {
@@ -105,7 +110,7 @@ func (f *Firefly) ListAccounts(accountType string) ([]Account, error) {
 		results = append(results, accs.Data...)
 
 		more = accs.Meta.Pagination.CurrentPage < accs.Meta.Pagination.TotalPages
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	return results, nil
@@ -126,7 +131,9 @@ func (f *Firefly) ListAccountTransactions(accountID string) (TxnsResponse, error
 	if err != nil {
 		return TxnsResponse{}, fmt.Errorf("failed to fetch Accounts: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return TxnsResponse{}, fmt.Errorf("got status %d", resp.StatusCode)

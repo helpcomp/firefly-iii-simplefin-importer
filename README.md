@@ -21,12 +21,9 @@ Example `config.yml`:
 
 ```
 ---
-  config:
-    enable_reconciliation: false  # Automatic Reconciliation
-    loopback_duration: 10d        # How many days of transactions to pull from Simplefin
-    non_asset_accounts:
-      100: reconciliation
-      101: withdrawal
+  non_asset_accounts:
+    100: reconciliation
+    101: withdrawal
   # Manually categorizes transactions, and bypasses OpenAI Auto-Categorization
   transactionBypass:
     - ONLINE PURCHASE:

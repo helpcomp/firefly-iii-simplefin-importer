@@ -3,8 +3,11 @@ package simplefin
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/rs/zerolog/log"
 	"github.com/shopspring/decimal"
+	"io"
 	"net/http"
+	"os"
 )
 
 type Simplefin struct {
@@ -23,12 +26,6 @@ type AccountsResponse struct {
 	Accounts []Accounts `json:"accounts"`
 }
 
-type organization struct {
-	Domain  string `json:"domain"`
-	SfinURL string `json:"sfin-url"`
-	Name    string `json:"name"`
-}
-
 type Transactions struct {
 	ID           string          `json:"id"`
 	Posted       int64           `json:"posted"`
@@ -39,7 +36,6 @@ type Transactions struct {
 	Extra        []string        `json:"extra"`
 }
 type Accounts struct {
-	Org              organization    `json:"org"`
 	ID               string          `json:"id"`
 	Name             string          `json:"name"`
 	Currency         string          `json:"currency"`
@@ -51,10 +47,17 @@ type Accounts struct {
 }
 
 var (
-	APICalls float64 = 0
+	APICalls  float64 = 0
+	CacheOnly         = false
 )
 
-func New(accessUrl string) *Simplefin {
+// New initializes and returns a new Simplefin instance with the provided accessUrl and cacheOnly settings.
+func New(accessUrl string, cacheOnly bool) *Simplefin {
+	CacheOnly = cacheOnly
+	if CacheOnly {
+		log.Debug().Msg("Running in Cache Only Mode")
+	}
+
 	return &Simplefin{
 		url: accessUrl,
 		filter: Filter{
@@ -63,8 +66,10 @@ func New(accessUrl string) *Simplefin {
 	}
 }
 
+// SetFilter updates the filter property of the Simplefin instance with the provided Filter.
 func (f *Simplefin) SetFilter(newFilter Filter) { f.filter = newFilter }
 
+// ToQuery constructs a query string based on the filter fields of the Simplefin instance.
 func (f *Simplefin) ToQuery() string {
 	appendQuery := "?"
 	if f.filter.StartDate > 0 {
@@ -81,16 +86,24 @@ func (f *Simplefin) ToQuery() string {
 	return appendQuery
 }
 
+// Accounts fetches account information from the Simplefin API or cache, returning an AccountsResponse or an error.
 func (f *Simplefin) Accounts() (AccountsResponse, error) {
-	var accs AccountsResponse
+	var accountsResponse AccountsResponse
 
-	/*JSONFile, err := os.Open("accounts.json")
-	byteValue, _ := io.ReadAll(JSONFile)
-	err = json.Unmarshal(byteValue, &accs)
-	if err != nil {
-		return AccountsResponse{}, err
+	// Debug -- Read From Cache
+	// This is to prevent a bunch of API calls to SimpleFin when I'm debugging.
+	// And since I forget to disable caching, might as well add a check
+	if CacheOnly {
+		JSONFile, _ := os.Open("accounts.json")
+		byteValue, _ := io.ReadAll(JSONFile)
+
+		err := json.Unmarshal(byteValue, &accountsResponse)
+		if err == nil {
+			return accountsResponse, nil
+		}
+
+		log.Debug().Msg("Missing accounts.json, fetching from API.")
 	}
-	return accs, nil*/
 
 	APICalls++
 	postURL := f.url + "/accounts" + f.ToQuery()
@@ -103,13 +116,19 @@ func (f *Simplefin) Accounts() (AccountsResponse, error) {
 		return AccountsResponse{}, fmt.Errorf("%s - %v", res.Status, res.StatusCode)
 	}
 
-	err = json.NewDecoder(res.Body).Decode(&accs)
+	err = json.NewDecoder(res.Body).Decode(&accountsResponse)
 	if err != nil {
 		return AccountsResponse{}, err
 	}
 
-	/*jsonString, _ := json.Marshal(accs)
-	os.WriteFile("accounts.json", jsonString, os.ModePerm)*/
+	// Debug Only - Write to accounts.json
+	if CacheOnly {
+		jsonString, _ := json.Marshal(accountsResponse)
+		err = os.WriteFile("accounts.json", jsonString, os.ModePerm)
+		if err != nil {
+			log.Err(err).Msg("Failed to write accounts.json!")
+		}
+	}
 
-	return accs, nil
+	return accountsResponse, nil
 }

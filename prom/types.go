@@ -1,7 +1,6 @@
 package prom
 
 import (
-	"fmt"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/config"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/firefly"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/simplefin"
@@ -21,7 +20,7 @@ var (
 
 	Sfinresp simplefin.AccountsResponse
 
-	Oai_usage openai.Usage
+	OaiUsage openai.Usage
 
 	mconfig *config.MasterConfig
 
@@ -152,7 +151,7 @@ func prometheusAccountStatsDesc(metric string, help string) *prometheus.Desc {
 		prometheus.BuildFQName(
 			namespace,
 			"account",
-			fmt.Sprintf("%s", metric),
+			metric,
 		),
 		help,
 		[]string{"account_id", "account_name", "type"},
@@ -165,7 +164,7 @@ func prometheusFireflyStatsDesc(metric string, help string) *prometheus.Desc {
 		prometheus.BuildFQName(
 			namespace,
 			"status",
-			fmt.Sprintf("%s", metric),
+			metric,
 		),
 		help,
 		[]string{},

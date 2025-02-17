@@ -2,24 +2,13 @@ package config
 
 import (
 	"github.com/go-yaml/yaml"
-	"log"
+	"github.com/rs/zerolog/log"
 	"os"
 )
 
-type openAI struct {
-	APIKey string `yaml:"key"`
-}
-
-type appConfig struct {
-	EnableReconciliation bool              `yaml:"enable_reconciliation"`
-	LoopbackDuration     string            `yaml:"loopback_duration"`
-	NonAssetAccounts     map[string]string `yaml:"non_asset_accounts"`
-}
-
 type MasterConfig struct {
 	Accounts                  map[string]string            `yaml:"accounts"`
-	AppConfig                 appConfig                    `yaml:"config"`
-	OpenAI                    openAI                       `yaml:"openai"`
+	NonAssetAccounts          map[string]string            `yaml:"non_asset_accounts"`
 	TransactionBypassResponse []map[string]TransactionInfo `yaml:"transactionBypass"`
 }
 
@@ -45,15 +34,10 @@ func InitConfig(path string) *MasterConfig {
 	return &init
 }
 func (c *MasterConfig) getConf(file string) *MasterConfig {
-
-	yamlFile, err := os.ReadFile(file)
+	yamlFile, _ := os.ReadFile(file)
+	err := yaml.Unmarshal(yamlFile, c)
 	if err != nil {
-		log.Printf("yamlFile.Get err   #%v ", err)
+		log.Fatal().Err(err).Msgf("%v ", err)
 	}
-	err = yaml.Unmarshal(yamlFile, c)
-	if err != nil {
-		log.Fatalf("Unmarshal: %v", err)
-	}
-
 	return c
 }

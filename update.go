@@ -19,9 +19,7 @@ import (
 	"time"
 )
 
-const (
-	_noname = "(no name)"
-)
+const _noname = "(no name)"
 
 type OpenAIResponse struct {
 	Merchant string `json:"Merchant"`
@@ -39,26 +37,20 @@ var bypassBalanceCheck []string
 
 // startUpdate initializes the process to update accounts and reconcile balances using Simplefin API and Firefly API.
 func startUpdate() {
-	// Variable Setup
-	var err error
-	var StartTimeDur time.Duration
-	var simpleFinAcctResp simplefin.AccountsResponse
 	// Duration Configuration - How far back to check for transactions
-	if c.AppConfig.LoopbackDuration != "" {
-		StartTimeDur, err = duration.ParseDuration(c.AppConfig.LoopbackDuration)
-		if err != nil {
-			prom.ProgramErrors++
-			log.Fatal().Err(err)
-		}
-
-		sfin.SetFilter(simplefin.Filter{
-			StartDate: time.Now().Add(-StartTimeDur - (24 * time.Hour)).Unix(),
-			Pending:   true,
-		})
+	StartTimeDur, err := duration.ParseDuration(cli.SimplefinLoopbackDuration)
+	if err != nil {
+		prom.ProgramErrors++
+		log.Fatal().Err(err)
 	}
 
+	sfin.SetFilter(simplefin.Filter{
+		StartDate: time.Now().Add(-StartTimeDur - (24 * time.Hour)).Unix(),
+		Pending:   true,
+	})
+
 	// Get accounts from Simplefin
-	simpleFinAcctResp, err = sfin.Accounts()
+	simpleFinAcctResp, err := sfin.Accounts()
 	if err != nil {
 		prom.APIErrors.Simplefin++
 		log.Fatal().Err(err).Msg("Could not initialize SimpleFin API.")
@@ -74,7 +66,7 @@ func startUpdate() {
 
 	// Remove non-existent transactions before looping through new / updated transactions
 	// This also prevents balance mismatch
-	RemoveNonExistantTransactions(simpleFinAcctResp)
+	RemoveNonExistentTransactions(simpleFinAcctResp)
 
 	// Loop through Simplefin Accounts
 	for _, acct := range simpleFinAcctResp.Accounts {
@@ -87,9 +79,9 @@ func startUpdate() {
 
 		// Account Reconciliation //
 		///////////////////////////
-		_, ok := c.AppConfig.NonAssetAccounts[c.Accounts[acct.ID]]
+		_, ok := c.NonAssetAccounts[c.Accounts[acct.ID]]
 		// Reconcile Account if there are no pending transactions, the balance doesn't match, and EnableReconciliation is true
-		if !accountHasPending && !currentAccount.Attributes.CurrentBalance.Equal(acct.Balance) && (c.AppConfig.EnableReconciliation || ok) {
+		if !accountHasPending && !currentAccount.Attributes.CurrentBalance.Equal(acct.Balance) && (cli.FireflyEnableReconciliation || ok) {
 			balanceDifference := acct.Balance.Sub(currentAccount.Attributes.CurrentBalance)
 			reconcile := firefly.Transaction{
 				Date:          time.Now().Format(time.DateOnly),
@@ -100,7 +92,7 @@ func startUpdate() {
 				Type:          "reconciliation",
 			}
 
-			if c.AppConfig.NonAssetAccounts[c.Accounts[acct.ID]] != "reconciliation" {
+			if c.NonAssetAccounts[c.Accounts[acct.ID]] != "reconciliation" {
 				reconcile.SourceName = _noname
 				reconcile.Type = "deposit"
 			}
@@ -111,7 +103,7 @@ func startUpdate() {
 				reconcile.DestinationID = ""
 				reconcile.DestinationName = currentAccount.Attributes.Name + " reconciliation (USD)"
 
-				if c.AppConfig.NonAssetAccounts[c.Accounts[acct.ID]] != "reconciliation" {
+				if c.NonAssetAccounts[c.Accounts[acct.ID]] != "reconciliation" {
 					reconcile.DestinationName = _noname
 					reconcile.Type = "withdrawal"
 				}
@@ -139,15 +131,15 @@ func startUpdate() {
 // DoesTransactionExist checks if a given transaction exists in Firefly within a specific time range.
 // It returns whether the transaction exists, whether an update is needed, and the ID of the matching transaction if found.
 func DoesTransactionExist(newTrans firefly.Transaction) (exists bool, update bool, oldTransactionID string) {
-	t, err := duration.ParseDuration(c.AppConfig.LoopbackDuration)
+	t, err := duration.ParseDuration(cli.SimplefinLoopbackDuration)
 	now := time.Now()
-	extendT, _ := duration.ParseDuration("-5d")
+	extendT, _ := duration.ParseDuration("-5d") // This is for transactions that are pending that take a while to post
 	then := now.Add(-t).Add(extendT)
 
 	// Unable to parse duration
 	if err != nil {
 		prom.ProgramErrors++
-		log.Fatal().Err(err).Msgf("Unable to format %s to duration. %v", c.AppConfig.LoopbackDuration, err)
+		log.Fatal().Err(err).Msgf("Unable to format %s to duration. %v", cli.SimplefinLoopbackDuration, err)
 		return false, false, ""
 	}
 
@@ -161,22 +153,20 @@ func DoesTransactionExist(newTrans firefly.Transaction) (exists bool, update boo
 	for _, ta := range existing {
 		// Loop through Transaction Attributes
 		for _, oldTrans := range ta.Attributes.Transactions {
-			// Transaction External ID doesn't match, skip
 			if oldTrans.ExternalID != newTrans.ExternalID {
 				continue
-			}
+			} // Transaction External ID doesn't match, skip
 
 			// Transaction Matches, Needs Update
 			oldDate, _ := time.Parse(time.RFC3339, oldTrans.Date)
 			if !oldTrans.Amount.Equal(newTrans.Amount) || oldDate.Format(time.DateOnly) != newTrans.Date || !slices.Equal(oldTrans.Tags, newTrans.Tags) || oldTrans.CategoryName == "" || oldTrans.DestinationName == _noname || oldTrans.SourceName == _noname {
 				return true, true, ta.ID
 			}
-			// Transaction Matches, No Update Needed
-			return true, false, ta.ID
+
+			return true, false, ta.ID // Transaction Matches, No Update Needed
 		}
 	}
-	// No matching transactions found
-	return false, false, ""
+	return false, false, "" // No matching transactions found
 }
 
 // CheckTransactions processes transactions of a given Simplefin account and reconciles them with Firefly's transactions.
@@ -198,14 +188,13 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 		newTrans := firefly.Transaction{}
 
 		// Non-Asset Accounts
-		_, NonAssetAccount := c.AppConfig.NonAssetAccounts[c.Accounts[acct.ID]]
-
+		_, NonAssetAccount := c.NonAssetAccounts[c.Accounts[acct.ID]]
 		if NonAssetAccount {
 			continue
 		}
 
 		// This is a Pending Transaction, add the Pending tag and mark the account as having a pending transaction
-		// (As to not trigger a Reconciliation Necessary alert)
+		// As to not trigger a Reconciliation Necessary alert
 		if trans.Pending {
 			tags = append(tags, "Pending")
 			accountHasPending = true
@@ -232,30 +221,33 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 			newTrans.Type = "deposit"
 		}
 
-		// Debug Mode - Skip posting and updating transactions
-		if cli.DoNotUpdateTransactions {
-			continue
-		}
-
 		// Check to see if the transaction already exists, and should we update it
 		exists, shouldUpdate, oldTransactionID := DoesTransactionExist(newTrans)
+
+		// Debug Mode - Skip posting and updating transactions
+		if cli.DoNotUpdateTransactions {
+			if !exists {
+				log.Info().Msgf("📜 Found New Transaction %s $%s", trans.Description, trans.Amount)
+			}
+			continue
+		}
 
 		// New Transaction
 		if !exists {
 			skipTransaction, err = PostTransaction(trans, newTrans)
-
 			if skipTransaction {
 				continue
 			}
 
 			log.Info().Msgf("📜 Found New Transaction %s $%s", trans.Description, trans.Amount)
 
-			// This handles non-pending transactions that were never added to SimpleFin
+			// This handles non-pending transactions never added to SimpleFin
 			if !trans.Pending {
 				pendingBalance = pendingBalance.Sub(trans.Amount)
 			}
 
 			if err != nil {
+				// Error Posting Transaction
 				prom.APIErrors.Firefly++
 				log.Error().Err(err).Msgf("🚨 transaction %s FAILED for %s - %v\n", trans.Description, acct.Name, err)
 				continue
@@ -288,6 +280,7 @@ func CheckTransactions(acct simplefin.Accounts) (hasPendingTransactions bool, pe
 			err = UpdateTransaction(oldTransactionID, newTrans, trans)
 
 			if err != nil {
+				// Error updating transaction
 				prom.APIErrors.Firefly++
 				log.Error().Err(err).Msgf("🚨 transaction Update %s FAILED for %s\n", trans.Description, acct.Name)
 				continue
@@ -446,9 +439,7 @@ func ExtractCompanyAndCategory(transaction simplefin.Transactions) ExtractedData
 	}
 
 	// OpenAI / ChatGPT
-	// prompt:= fmt.Sprintf("I would like to sort bank transactions by merchant and category given the following categories: %s What would the merchant and category be for the following transaction: %s If no category is found leave it blank. If no company is found leave it blank. If the payment was made by a payment service like paypal only show the merchant name not the payment service used. Please make your best guess. Responses should be in merchant;category only. Do not return any english text other than the merchant;category as I will be parsing the response if the response is in any other format it will fail.", strings.Join(stringCategories, ", "), transaction.Description)
 	prompt := fmt.Sprintf("Given the following transaction %s Please respond with JSON using Merchant and Category. \"Merchant\" which is your best guess at the merchant the bank transaction stemmed from using the following list seperated by commas: %s . If a sutable merchant isn't found from the list you can choose your own. when the payment was made via a payment service like paypal only show the merchant name not the payment service used. \"Category\" a general business accounting category you would expect this sort of transaction to be categorized to from the following list seperated by commas: %s . Choose the best category that fits this transaction. Choose only one merchant and category. Do not respond in anything other than JSON, No English unless in JSON format.", transaction.Description, sbAccounts.String(), sbCategories.String())
-	// prompt = fmt.Sprintf("Given the following bank transaction: %s I need the merchant name and category from the transaction. Take your best guess at the merchant, If the payment was made by a payment service like paypal only show the merchant name not the payment service used. For the category please choose from one of the following: %s. The categories are seperated by commas. Produce ONLY JSON using the following properties: company, category. Do not return any English text other than the JSON either before or after as I will be parsing the JSON and it will fail if you return anything else.", transaction.Description, strings.Join(stringCategories, ", "))
 
 	req := openai.CompletionRequest{
 		Model:     openai.GPT3Dot5TurboInstruct,
@@ -461,7 +452,7 @@ func ExtractCompanyAndCategory(transaction simplefin.Transactions) ExtractedData
 		log.Error().Err(err).Msgf("Error with ChatGPT/OpenAI : %v", err)
 		return extracted
 	}
-	prom.Oai_usage = resp.Usage
+	prom.OaiUsage = resp.Usage
 	prom.APICalls.OpenAI++
 	// Split the text by semicolon to get Company and Category
 	var rsp OpenAIResponse
@@ -494,10 +485,11 @@ func FindCategoryID(categoryName string, categories []firefly.Category) string {
 	return ""
 }
 
-// RemoveNonExistantTransactions removes Firefly transactions that no longer exist in SimpleFin within a specified time frame.
-func RemoveNonExistantTransactions(accts simplefin.AccountsResponse) {
+// RemoveNonExistentTransactions removes Firefly transactions
+// that no longer exist in SimpleFin within a specified time frame.
+func RemoveNonExistentTransactions(accts simplefin.AccountsResponse) {
 	log.Info().Msgf("Checking for non-existant transactions")
-	t, _ := duration.ParseDuration(c.AppConfig.LoopbackDuration)
+	t, _ := duration.ParseDuration(cli.SimplefinLoopbackDuration)
 
 	existing, _ := ff.CachedTransactions(firefly.TransactionsKey{
 		Start: time.Now().Add(-t).Format(time.DateOnly),
@@ -518,9 +510,9 @@ func RemoveNonExistantTransactions(accts simplefin.AccountsResponse) {
 				}
 			}
 			if transactionExists {
-				// Transaction was found, continue to next transaction
 				continue
-			}
+			} // Transaction was found, continue to next transaction
+
 			// The Transaction was not found in SimpleFin. It needs to be deleted
 			log.Info().Msgf("Transaction %s (%s) doesn't exist in SimpleFin. Removing it.", fireflyTrans.Description, transAttrib.ID)
 			err := ff.DeleteTransaction(transAttrib.ID)

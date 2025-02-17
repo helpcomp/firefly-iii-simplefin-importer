@@ -124,19 +124,19 @@ func (e *Exporter) CollectSys(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		e.OpenAITokens,
 		prometheus.CounterValue,
-		float64(Oai_usage.CompletionTokens),
+		float64(OaiUsage.CompletionTokens),
 		"completion",
 	)
 	ch <- prometheus.MustNewConstMetric(
 		e.OpenAITokens,
 		prometheus.CounterValue,
-		float64(Oai_usage.TotalTokens),
+		float64(OaiUsage.TotalTokens),
 		"total",
 	)
 	ch <- prometheus.MustNewConstMetric(
 		e.OpenAITokens,
 		prometheus.CounterValue,
-		float64(Oai_usage.PromptTokens),
+		float64(OaiUsage.PromptTokens),
 		"prompt",
 	)
 	ch <- prometheus.MustNewConstMetric(

@@ -5,10 +5,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"sync"
 	"time"
-
-	"github.com/helpcomp/firefly-iii-simplefin-importer/budget"
-	"github.com/helpcomp/firefly-iii-simplefin-importer/categorybudget"
-	"github.com/helpcomp/firefly-iii-simplefin-importer/interval"
 )
 
 // Since queries to firefly are slow (up to 5 seconds), keep a cache of these
@@ -203,67 +199,6 @@ func (f *Firefly) refreshTransactions(key TransactionsKey) error {
 	return nil
 }
 
-// RefreshCaches refreshes caches for the current budget and its related data.
-// This is intended to be run when lychnos launches.
-func (f *Firefly) RefreshCaches(c *categorybudget.CategoryBudgets, b *budget.Budgets) error {
-	err := f.refreshCategories()
-	if err != nil {
-		return fmt.Errorf("failed to refresh categories: %s", err)
-	}
-	err = f.refreshAccounts()
-	if err != nil {
-		return fmt.Errorf("failed to refresh accounts: %s", err)
-	}
-
-	bs, err := b.List()
-	if err != nil {
-		return fmt.Errorf("failed to list budgets: %s", err)
-	}
-	cbs, err := c.List()
-	if err != nil {
-		return fmt.Errorf("failed to list category budgets: %s", err)
-	}
-
-	now := time.Now()
-	for _, bgt := range bs {
-		if now.Before(bgt.Start) || now.After(bgt.End) {
-			continue // Only update the cache for the current budget.
-		}
-
-		go func(bgt budget.Budget) {
-			key := categoryTotalsKey{
-				Start: bgt.Start,
-				End:   bgt.End,
-			}
-			err := f.refreshCategoryTotals(key)
-			if err != nil {
-				log.Error().Err(err).Msgf("Failed to seed category totals cache")
-			}
-		}(bgt)
-		for _, cb := range cbs {
-			if cb.Budget != bgt.ID {
-				continue
-			}
-			intervals := interval.Get(bgt.Start, bgt.End, time.Now().Local().Location())
-			for _, i := range intervals {
-				go func(i interval.ReportingInterval, cb categorybudget.CategoryBudget) {
-					key := categoryTotalsKey{
-						CategoryID: cb.Category,
-						Start:      i.Start.Local(),
-						End:        i.End.Local(),
-					}
-					err := f.refreshCategoryTotals(key)
-					if err != nil {
-						log.Error().Err(err).Msgf("Failed to seed category totals cache")
-					}
-				}(i, cb)
-			}
-		}
-	}
-
-	return nil
-}
-
 // refreshCategoryTxnCache will invalidate cache entries related to a particular
 // category and time. This should be called after creating a transaction.
 func (f *Firefly) refreshCategoryTxnCache(tgt categoryTotalsKey) {
@@ -276,7 +211,7 @@ func (f *Firefly) refreshCategoryTxnCache(tgt categoryTotalsKey) {
 			log.Info().Msgf("Cache: clearing CategoryTotals for key %d, %s, %s", k.CategoryID, k.Start, k.End)
 			delete(f.cache.CategoryTotals, k)
 			go func(k categoryTotalsKey) {
-				f.refreshCategoryTotals(k)
+				_ = f.refreshCategoryTotals(k)
 			}(k)
 		}
 	}
