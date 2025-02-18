@@ -38,6 +38,7 @@ var cli struct {
 	RefreshTime                 uint16 `env:"REFRESH_TIME" help:"${env} - Time in minutes for refresh (Default 1440 / 1 day)" default:"1440"`
 	EnablePrometheus            bool   `env:"ENABLE_PROMETHEUS" help:"${env} - Enable Prometheus metrics" default:"true"`
 	FireflyEnableReconciliation bool   `env:"ENABLE_AUTO_RECONCILIATION" help:"${env} - Enables Automatic Reconciliation of the accounts" default:"false"`
+	AutoRemoveTransactions      bool   `env:"ENABLE_AUTO_TRANSACTION_REMOVAL" help:"${env} - Removes transactions that no longer exist in SimpleFIN" default:"false"`
 	CacheOnly                   bool   `env:"DEBUG_CACHE_ONLY" help:"${env} - Cache Only - Does not query Simplefin unless no cache exists (Debug)" default:"false"`
 	DoNotUpdateTransactions     bool   `env:"DEBUG_DO_NOT_UPDATE_TRANSACTIONS" help:"${env} - Do not update / post new transactions (Debug)" default:"false"`
 }

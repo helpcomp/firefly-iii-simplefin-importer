@@ -15,7 +15,9 @@ Use [Firefly III](https://github.com/firefly-iii/firefly-iii) to store transacti
 
 
 ## Setup
-You will need a Firefly III with a personal access token, a SimpleFin Access URL.
+Please follow https://github.com/helpcomp/firefly-iii-simplefin-importer/wiki/Getting-Started
+
+You will need a Firefly III with a personal access token, and a SimpleFin Access URL.
 
 Example `config.yml`:
 
@@ -37,4 +39,22 @@ Example `config.yml`:
   # Accounts: Simplefin Account ID: Firefly Asset ID
   accounts:
     ACT-00000-0000-0000-0000-0000000000: 1
+```
+
+Example `docker-compose.yml`:
+```
+services:     
+  simplefinbridgeexporter:
+    build: https://github.com/helpcomp/firefly-iii-simplefin-importer.git
+    # env_file: .env  # You may either use environment, or env_File
+    environment:
+      - FIREFLY_TOKEN=
+      - SIMPLEFIN_ACCESS_URL=
+      - FIREFLY_URL=http://firefly:8080
+      - OPENAI_API_KEY=
+    volumes:
+      - ./config.yml:/config.yml
+    ports:
+      - 9717:9717
+    restart: always
 ```

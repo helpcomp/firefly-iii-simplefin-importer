@@ -513,7 +513,21 @@ func RemoveNonExistentTransactions(accts simplefin.AccountsResponse) {
 				continue
 			} // Transaction was found, continue to next transaction
 
+			// If there is no ExternalID, skip the transaction - it may have been added manually.
+			if fireflyTrans.ExternalID == "" {
+				log.Info().Msgf("Transaction %s (%s) doesn't exist in SimpleFin. Missing ExternalID; It was probably added manually, skipping removal.", fireflyTrans.Description, transAttrib.ID)
+				continue
+			}
+
 			// The Transaction was not found in SimpleFin. It needs to be deleted
+			if !cli.AutoRemoveTransactions {
+				// Auto Removal is turned off, alert only.
+				log.Info().Msgf("Transaction %s (%s) doesn't exist in SimpleFin.", fireflyTrans.Description, transAttrib.ID)
+				continue
+			}
+
+			// Auto Removal is enabled, proceed with removing the transaction.
+
 			log.Info().Msgf("Transaction %s (%s) doesn't exist in SimpleFin. Removing it.", fireflyTrans.Description, transAttrib.ID)
 			err := ff.DeleteTransaction(transAttrib.ID)
 			if err != nil {
