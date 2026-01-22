@@ -1,9 +1,10 @@
 package config
 
 import (
+	"os"
+
 	"github.com/go-yaml/yaml"
 	"github.com/rs/zerolog/log"
-	"os"
 )
 
 type MasterConfig struct {
@@ -34,10 +35,14 @@ func InitConfig(path string) *MasterConfig {
 	return &init
 }
 func (c *MasterConfig) getConf(file string) *MasterConfig {
-	yamlFile, _ := os.ReadFile(file)
-	err := yaml.Unmarshal(yamlFile, c)
+	yamlFile, err := os.ReadFile(file)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("%v ", err)
+		log.Fatal().Err(err).Msgf("Error opening master config %s", file)
+	}
+
+	err = yaml.Unmarshal(yamlFile, c)
+	if err != nil {
+		log.Fatal().Err(err).Msgf("Error reading master config %s", file)
 	}
 	return c
 }

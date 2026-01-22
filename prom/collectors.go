@@ -1,12 +1,14 @@
 package prom
 
 import (
+	"sync"
+
 	"github.com/helpcomp/firefly-iii-simplefin-importer/firefly"
-	"github.com/helpcomp/firefly-iii-simplefin-importer/simplefin"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shopspring/decimal"
-	"sync"
 )
+
+const maxConcurrentWorkers = 10
 
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	e.CollectAccounts(ch) // Firefly Account Collector
@@ -14,22 +16,39 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 }
 
 func (e *Exporter) CollectAccounts(ch chan<- prometheus.Metric) {
-	var wg sync.WaitGroup                         // Used for goroutines - Wait for multiple goroutines to finish
-	cachedAccounts, _ := ff.ListAccounts("asset") // Get Accounts
+	var wg sync.WaitGroup                           // Used for goroutines - Wait for multiple goroutines to finish
+	cachedAccounts, _ := e.ff.ListAccounts("asset") // Get Accounts
+	cats, _ := e.ff.CachedCategories()
+
+	// Create job channels
+	type accountJob struct {
+		account firefly.Account
+	}
+	type categoryJob struct {
+		category firefly.Category
+	}
+
+	accountJobs := make(chan accountJob, len(cachedAccounts))
+	categoryJobs := make(chan categoryJob, len(cats))
+
+	// Start a worker pool for accounts
+	for i := 0; i < maxConcurrentWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range accountJobs {
+				e.collectAccountTransactions(job.account.ID, job.account.Attributes.Name, job.account.Attributes.Type, ch)
+			}
+		}()
+	}
 
 	// Accounts //
 	//////////////
-	// Account Transactions
+	// Send account jobs to workers
 	for _, account := range cachedAccounts {
-		wg.Add(1)
-		go func(account firefly.Account) {
-			// Decrement the counter when the goroutine completes.
-			defer wg.Done()
-			// Fetch the URL.
-			e.collectAccountTransactions(account.ID, account.Attributes.Name, account.Attributes.Type, ch)
-		}(account)
+		accountJobs <- accountJob{account: account}
 
-		// Account Balance
+		// Account Balance (send directly, no need to go through worker)
 		ch <- prometheus.MustNewConstMetric(
 			e.AccountBalance,
 			prometheus.GaugeValue,
@@ -38,35 +57,49 @@ func (e *Exporter) CollectAccounts(ch chan<- prometheus.Metric) {
 		)
 
 		// Account Balance Date
-		for _, sfinAccount := range Sfinresp.Accounts {
-			if mconfig.Accounts[sfinAccount.ID] == account.ID {
+		for _, acct := range e.SimpleFinAccounts {
+			if e.config.Accounts[acct.ID] == account.ID {
 				ch <- prometheus.MustNewConstMetric(
 					e.AccountRefreshTime,
 					prometheus.GaugeValue,
-					float64(sfinAccount.BalanceDate),
+					float64(acct.BalanceDate),
 					account.ID, account.Attributes.Name, account.Attributes.Type,
 				)
 				break
 			}
 		}
 	}
+	close(accountJobs) // Signal no more account jobs
+
+	// Wait for account workers to finish
+	wg.Wait()
+
 	// Category //
 	/////////////
-	cats, _ := ff.CachedCategories()
-	// Category Transactions
-	for _, cat := range cats {
+	// Start worker pool for categories
+	for i := 0; i < maxConcurrentWorkers; i++ {
 		wg.Add(1)
-		go func(cat firefly.Category) {
+		go func() {
 			defer wg.Done()
-			e.collectCategoryTransactions(cat.ID, cat.Name, ch)
-		}(cat)
+			for job := range categoryJobs {
+				e.collectCategoryTransactions(job.category.ID, job.category.Name, ch)
+			}
+		}()
 	}
-	wg.Wait() // Wait for all the goroutines to finish
+
+	// Send category jobs to workers
+	for _, cat := range cats {
+		categoryJobs <- categoryJob{category: cat}
+	}
+	close(categoryJobs) // Signal no more category jobs
+
+	// Wait for category workers to finish
+	wg.Wait()
 }
 
 // collectAccountTransactions Scrapes Firefly for Account Transactions based on the given account ID
 func (e *Exporter) collectAccountTransactions(id string, name string, acctType string, ch chan<- prometheus.Metric) {
-	accountTrans, _ := ff.ListAccountTransactions(id)
+	accountTrans, _ := e.ff.ListAccountTransactions(id)
 
 	ch <- prometheus.MustNewConstMetric(
 		e.AccountTransactions,
@@ -78,7 +111,7 @@ func (e *Exporter) collectAccountTransactions(id string, name string, acctType s
 
 // collectCategoryTransactions Scrapes Firefly for Category Transactions based on the given category ID
 func (e *Exporter) collectCategoryTransactions(id int, name string, ch chan<- prometheus.Metric) {
-	categoryTrans, _ := ff.ListCategoryTransactions(id)
+	categoryTrans, _ := e.ff.ListCategoryTransactions(id)
 	CatAmt := decimal.Decimal{}
 
 	for _, categoryTransP := range categoryTrans.Data {
@@ -103,7 +136,7 @@ func (e *Exporter) collectCategoryTransactions(id int, name string, ch chan<- pr
 
 // CollectSys Collects Program information (API calls, etc...)
 func (e *Exporter) CollectSys(ch chan<- prometheus.Metric) {
-	ch <- prometheus.MustNewConstMetric(
+	/*ch <- prometheus.MustNewConstMetric(
 		e.APICalls,
 		prometheus.CounterValue,
 		APICalls.Firefly,
@@ -155,5 +188,5 @@ func (e *Exporter) CollectSys(ch chan<- prometheus.Metric) {
 		e.ProgramErrors,
 		prometheus.CounterValue,
 		ProgramErrors,
-	)
+	)*/
 }

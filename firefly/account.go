@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/helpcomp/firefly-iii-simplefin-importer/httperror"
-	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
 	"io"
 	"net/http"
 	"regexp"
+
+	"github.com/helpcomp/firefly-iii-simplefin-importer/httperror"
+	"github.com/rs/zerolog/log"
+	"github.com/shopspring/decimal"
 )
 
 type accountsResponse struct {
@@ -58,14 +59,14 @@ func (f *Firefly) listAccounts(w http.ResponseWriter, req *http.Request) {
 	if ok && len(acctTypes) > 0 {
 		var filteredAccounts []Account
 		for _, t := range acctTypes {
-			for _, a := range accounts {
+			for _, a := range accounts.Accounts {
 				if a.Attributes.Type != t {
 					continue
 				}
 				filteredAccounts = append(filteredAccounts, a)
 			}
 		}
-		accounts = filteredAccounts
+		accounts.Accounts = filteredAccounts
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -100,17 +101,19 @@ func (f *Firefly) ListAccounts(accountType string) ([]Account, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("got status %d", resp.StatusCode)
 		}
 
 		err = json.NewDecoder(resp.Body).Decode(&accs)
+		_ = resp.Body.Close()
+
 		if err != nil {
 			return nil, err
 		}
 		results = append(results, accs.Data...)
 
 		more = accs.Meta.Pagination.CurrentPage < accs.Meta.Pagination.TotalPages
-		_ = resp.Body.Close()
 	}
 
 	return results, nil

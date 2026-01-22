@@ -5,28 +5,6 @@ import (
 	"github.com/helpcomp/firefly-iii-simplefin-importer/firefly"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/simplefin"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/sashabaranov/go-openai"
-)
-
-type APIStruct struct {
-	Firefly   float64
-	Simplefin float64
-	OpenAI    float64
-}
-
-var (
-	namespace = "firefly"
-	ff        *firefly.Firefly
-
-	Sfinresp simplefin.AccountsResponse
-
-	OaiUsage openai.Usage
-
-	mconfig *config.MasterConfig
-
-	APIErrors     APIStruct
-	APICalls      APIStruct
-	ProgramErrors float64 = 0
 )
 
 type Exporter struct {
@@ -42,6 +20,9 @@ type Exporter struct {
 	RateLimit             *prometheus.Desc
 	categoryActivity      *prometheus.Desc
 	categoryBalance       *prometheus.Desc
+	ff                    *firefly.Firefly
+	SimpleFinAccounts     []simplefin.Accounts
+	config                *config.MasterConfig
 }
 
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
@@ -57,9 +38,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	ch <- e.categoryBalance
 }
 
-func NewExporter(newFireFly *firefly.Firefly, configPath string) *Exporter {
-	ff = newFireFly
-	mconfig = config.InitConfig(configPath)
+func NewExporter(namespace string, newFireFly *firefly.Firefly, config *config.MasterConfig, accounts []simplefin.Accounts) *Exporter {
 	return &Exporter{
 		AccountTransactions: prometheus.NewDesc(
 			prometheus.BuildFQName(
@@ -72,10 +51,12 @@ func NewExporter(newFireFly *firefly.Firefly, configPath string) *Exporter {
 			nil,
 		),
 		AccountBalance: prometheusAccountStatsDesc(
+			namespace,
 			"balance",
 			"Balance for the given account",
 		),
 		AccountRefreshTime: prometheusAccountStatsDesc(
+			namespace,
 			"refresh_time",
 			"Time account was last refreshed (Unix Time / Epoch)",
 		),
@@ -120,6 +101,7 @@ func NewExporter(newFireFly *firefly.Firefly, configPath string) *Exporter {
 			nil,
 		),
 		ProgramErrors: prometheusFireflyStatsDesc(
+			namespace,
 			"program_errors",
 			"Current status of the system",
 		),
@@ -143,10 +125,13 @@ func NewExporter(newFireFly *firefly.Firefly, configPath string) *Exporter {
 			[]string{"type"},
 			nil,
 		),
+		ff:                newFireFly,
+		config:            config,
+		SimpleFinAccounts: accounts,
 	}
 }
 
-func prometheusAccountStatsDesc(metric string, help string) *prometheus.Desc {
+func prometheusAccountStatsDesc(namespace string, metric string, help string) *prometheus.Desc {
 	return prometheus.NewDesc(
 		prometheus.BuildFQName(
 			namespace,
@@ -159,7 +144,7 @@ func prometheusAccountStatsDesc(metric string, help string) *prometheus.Desc {
 	)
 }
 
-func prometheusFireflyStatsDesc(metric string, help string) *prometheus.Desc {
+func prometheusFireflyStatsDesc(namespace string, metric string, help string) *prometheus.Desc {
 	return prometheus.NewDesc(
 		prometheus.BuildFQName(
 			namespace,

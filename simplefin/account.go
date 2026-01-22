@@ -3,16 +3,20 @@ package simplefin
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog/log"
-	"github.com/shopspring/decimal"
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"time"
+
+	"github.com/rs/zerolog/log"
+	"github.com/shopspring/decimal"
 )
 
 type Simplefin struct {
-	url    string
-	filter Filter
+	url       string
+	filter    Filter
+	CacheOnly bool
 }
 
 type Filter struct {
@@ -46,15 +50,14 @@ type Accounts struct {
 	Extra            []string        `json:"extra"`
 }
 
-var (
-	APICalls  float64 = 0
-	CacheOnly         = false
-)
+type AccountJson struct {
+	Data       AccountsResponse
+	ParsedTime time.Time
+}
 
 // New initializes and returns a new Simplefin instance with the provided accessUrl and cacheOnly settings.
 func New(accessUrl string, cacheOnly bool) *Simplefin {
-	CacheOnly = cacheOnly
-	if CacheOnly {
+	if cacheOnly {
 		log.Debug().Msg("Running in Cache Only Mode")
 	}
 
@@ -63,6 +66,7 @@ func New(accessUrl string, cacheOnly bool) *Simplefin {
 		filter: Filter{
 			Pending: false,
 		},
+		CacheOnly: cacheOnly,
 	}
 }
 
@@ -89,31 +93,53 @@ func (f *Simplefin) ToQuery() string {
 // Accounts fetches account information from the Simplefin API or cache, returning an AccountsResponse or an error.
 func (f *Simplefin) Accounts() (AccountsResponse, error) {
 	var accountsResponse AccountsResponse
+	var accountsResposneData AccountJson
 
 	// Debug -- Read From Cache
 	// This is to prevent a bunch of API calls to SimpleFin when I'm debugging.
 	// And since I forget to disable caching, might as well add a check
-	if CacheOnly {
+	if f.CacheOnly {
 		JSONFile, _ := os.Open("accounts.json")
 		byteValue, _ := io.ReadAll(JSONFile)
 
-		err := json.Unmarshal(byteValue, &accountsResponse)
-		if err == nil {
-			return accountsResponse, nil
-		}
+		defer func(JSONFile *os.File) {
+			err := JSONFile.Close()
+			if err != nil {
+				log.Err(err).Msg("Error closing accounts.json!")
+			}
+		}(JSONFile)
 
-		log.Debug().Msg("Missing accounts.json, fetching from API.")
+		err := json.Unmarshal(byteValue, &accountsResposneData)
+
+		if err == nil {
+			now := time.Now()
+			dur := now.Sub(accountsResposneData.ParsedTime)
+
+			if dur.Hours() < 48 {
+				validFor := 48 - dur.Hours()
+				log.Debug().Msg("[Cache Only Mode] : Cache is valid for " + strconv.FormatFloat(validFor, 'f', 0, 64) + " hours.")
+				return accountsResposneData.Data, nil
+			} else {
+				log.Debug().Msg("Cache expired, fetching from API.")
+			}
+		} else {
+			log.Debug().Msg("Missing accounts.json, fetching from API.")
+		}
 	}
 
-	APICalls++
 	postURL := f.url + "/accounts" + f.ToQuery()
 
 	res, err := http.Get(postURL)
 	if err != nil {
 		return AccountsResponse{}, err
 	}
+
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(res.Body)
+
 	if res.StatusCode != http.StatusOK {
-		return AccountsResponse{}, fmt.Errorf("%s - %v", res.Status, res.StatusCode)
+		return AccountsResponse{}, fmt.Errorf("invalid HTTP Status Code %d", res.StatusCode)
 	}
 
 	err = json.NewDecoder(res.Body).Decode(&accountsResponse)
@@ -122,8 +148,11 @@ func (f *Simplefin) Accounts() (AccountsResponse, error) {
 	}
 
 	// Debug Only - Write to accounts.json
-	if CacheOnly {
-		jsonString, _ := json.Marshal(accountsResponse)
+	if f.CacheOnly {
+		jsonString, _ := json.Marshal(AccountJson{
+			Data:       accountsResponse,
+			ParsedTime: time.Now(),
+		})
 		err = os.WriteFile("accounts.json", jsonString, os.ModePerm)
 		if err != nil {
 			log.Err(err).Msg("Failed to write accounts.json!")

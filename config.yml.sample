@@ -1,20 +1,21 @@
 ---
-  config:
-    enable_reconciliation: false  # Automatic Reconciliation
-    loopback_duration: 10d        # How many days of transactions to pull from Simplefin
-    non_asset_accounts:
-      100: reconciliation
-      101: withdrawal
-  # Manually categorizes transactions, and bypasses OpenAI Auto-Categorization
-  transactionBypass:
-    - ONLINE PURCHASE:
-        company: "GitHub"
-        category: "Shopping"
-        source_account: "1"
-        destination_account: "25"
-        type: "transfer"
-    - MONEY TRANSFER:
-          skip: true
-  # Accounts: Simplefin Account ID: Firefly Asset ID
-  accounts:
-    ACT-00000-0000-0000-0000-0000000000: 1
+non_asset_accounts:     # As the name suggests, generally 'Liabilities' that require reconciliation to update
+  127: reconciliation
+  108: withdrawal
+
+openai:
+  key: <Your OpenAI Key Here - Or Use Env>
+
+transactionBypass:                     # Transactions that bypass OpenAI/Azure
+  - GITHUB PAYMENT   :                 # Transaction Name
+      company: "Flowers R Us "         # Company
+      category: "Credit Card Payment"  # Category
+      source_account: "1"              # Source Account ID
+      destination_account: "25"        # Destination Account ID
+      type: "transfer"                 # Transaction Type (transfer, deposit, withdrawal)
+      skip: false                      # Skip uploading this transaction to firefly
+accounts: # Your SimpleFIN Account UUID and the Firefly Account ID
+  ACT-00000000-0000-0000-0000-000000000000: 25
+  # Ignore
+  ACT-00000000-0000-0000-0000-000000000000: 0
+  ACT-00000000-0000-0000-0000-000000000000: 0

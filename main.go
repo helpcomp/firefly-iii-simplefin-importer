@@ -1,30 +1,32 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	_ "net/http/pprof"
+
 	"github.com/alecthomas/kong"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/config"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/firefly"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/prom"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/simplefin"
 	"github.com/prometheus/client_golang/prometheus"
+	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/prometheus/common/version"
 	"github.com/prometheus/exporter-toolkit/web"
-	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/sashabaranov/go-openai"
-	"net/http"
-	"os"
-	"time"
 )
 
-var (
-	ff *firefly.Firefly
-	c  *config.MasterConfig
-
-	oai  *openai.Client
-	sfin *simplefin.Simplefin
-)
+const AppName = "firefly-iii-simplefin-importer"
+const AppDesc = "Go-based service that connects your SimpleFIN-enabled financial institutions to Firefly III. It periodically fetches account data and transactions from SimpleFIN, syncs them into Firefly III."
 
 var cli struct {
 	MetricsPath                 string `env:"EXPORTER_METRICS_PATH" help:"${env} - Path under which to expose metrics" default:"/metrics"`
@@ -34,7 +36,10 @@ var cli struct {
 	FireflyBase                 string `env:"FIREFLY_URL" help:"${env} - Firefly URL" required:""`
 	SimplefinAccessURL          string `env:"SIMPLEFIN_ACCESS_URL" help:"${env} - Simplefin Access URL" required:""`
 	SimplefinLoopbackDuration   string `env:"SIMPLEFIN_LOOPBACK_DURATION" help:"${env} - How far back should Simplefin pull transaction data" default:"10d"`
+	AzureAIAPIKey               string `env:"AZURE_API_KEY" help:"${env} - API Key for Azure OpenAI. If none is provided, OpenAI support is disabled"`
+	AzureEndpoint               string `env:"AZURE_ENDPOINT" help:"${env} - Azure OpenAI Endpoint"`
 	OpenAIAPIKey                string `env:"OPENAI_API_KEY" help:"${env} - API Key for OpenAI. If none is provided, OpenAI support is disabled"`
+	OpenAIModel                 string `env:"OPENAI_MODEL" help:"${env} - OpenAI Model type. Default is gpt-3.5-turbo-instruct" default:"gpt-3.5-turbo-instruct"`
 	RefreshTime                 uint16 `env:"REFRESH_TIME" help:"${env} - Time in minutes for refresh (Default 1440 / 1 day)" default:"1440"`
 	EnablePrometheus            bool   `env:"ENABLE_PROMETHEUS" help:"${env} - Enable Prometheus metrics" default:"true"`
 	FireflyEnableReconciliation bool   `env:"ENABLE_AUTO_RECONCILIATION" help:"${env} - Enables Automatic Reconciliation of the accounts" default:"false"`
@@ -44,22 +49,52 @@ var cli struct {
 }
 
 func main() {
-	// SETUP //
-	//////////
-	kong.Parse(&cli)                                                                             // Kong Parser
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout})                               // Logger
-	c = config.InitConfig(cli.ConfigPath)                                                        // Config
-	ff = firefly.New(&http.Client{Timeout: time.Second * 30}, cli.FireflyToken, cli.FireflyBase) // Firefly
-	sfin = simplefin.New(cli.SimplefinAccessURL, cli.CacheOnly)                                  // SimpleFIN
+	// Variable Setup //
+	///////////////////
+	kong.Parse(&cli,
+		kong.Name(AppName),
+		kong.Description(AppDesc),
+	)
+	log.Logger = log.Output(os.Stderr).With().Caller().Logger()                                   // Logger
+	var oai *openai.Client                                                                        // OpenAI
+	sf := simplefin.New(cli.SimplefinAccessURL, cli.CacheOnly)                                    // Simplefin
+	ff := firefly.New(&http.Client{Timeout: time.Second * 30}, cli.FireflyToken, cli.FireflyBase) // Firefly
+	cfg := config.InitConfig(cli.ConfigPath)                                                      // Config
+	var simplefinAccounts []simplefin.Accounts
+
+	// AI Setup //
+	/////////////
+	// OpenAI
 	if cli.OpenAIAPIKey != "" {
 		oai = openai.NewClient(cli.OpenAIAPIKey)
-	} // OpenAI
+	}
+	// AzureAI
+	if cli.AzureAIAPIKey != "" {
+		if cli.AzureEndpoint == "" {
+			log.Error().Msg("Azure Endpoint is required if Azure API Key is provided")
+		} else {
+			oai = openai.NewClientWithConfig(openai.DefaultAzureConfig(cli.AzureAIAPIKey, cli.AzureEndpoint))
+		}
+	}
+
+	// Start //
+	///////////
+	log.Logger.Info().
+		Str("version", version.Info()).
+		Msg("Starting " + AppName)
+
+	// Create a channel to listen for interrupt signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM, syscall.SIGINT)
 
 	// Refresher
 	ticker := time.NewTicker(time.Duration(cli.RefreshTime) * time.Minute)
 	quit := make(chan struct{})
 
-	startUpdate()
+	// Immediately start a refresh of the data in the background
+	go func() {
+		simplefinAccounts = startUpdate(sf, ff, cfg, oai)
+	}()
 
 	// No Prometheus Support, refresh only
 	if !cli.EnablePrometheus {
@@ -67,8 +102,12 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				startUpdate()
+				simplefinAccounts = startUpdate(sf, ff, cfg, oai)
 			case <-quit:
+				ticker.Stop()
+				return
+			case sig := <-sigChan:
+				log.Info().Msgf("Received signal %s. Exiting...", sig)
 				ticker.Stop()
 				return
 			}
@@ -80,7 +119,7 @@ func main() {
 		for {
 			select {
 			case <-ticker.C:
-				startUpdate()
+				simplefinAccounts = startUpdate(sf, ff, cfg, oai)
 			case <-quit:
 				ticker.Stop()
 				return
@@ -88,13 +127,19 @@ func main() {
 		}
 	}()
 
-	prometheus.MustRegister(prom.NewExporter(ff, cli.ConfigPath))
+	// Metric Registration
+	prometheus.MustRegister(
+		versioncollector.NewCollector(AppName),
+		prom.NewExporter(AppName, ff, cfg, simplefinAccounts),
+	)
+
+	// HTTP Server
 	http.Handle(cli.MetricsPath, promhttp.Handler())
 	if cli.MetricsPath != "/" && cli.MetricsPath != "" {
 		landingConfig := web.LandingConfig{
-			Name:        "FireFly III Exporter",
-			Description: "Prometheus Firefly III Exporter",
-			Version:     version.Print("firefly-iii-simplefin-importer"),
+			Name:        AppName,
+			Description: AppDesc,
+			Version:     version.Print(AppName),
 			Links: []web.LandingLinks{
 				{
 					Address: cli.MetricsPath,
@@ -117,7 +162,29 @@ func main() {
 
 	log.Info().Msgf("Starting HTTP server on listen address :%s and metric path %s", cli.ListenAddress, cli.MetricsPath)
 
-	if err := http.ListenAndServe(":"+cli.ListenAddress, nil); err != nil {
-		log.Fatal().Err(err).Msg("")
+	server := &http.Server{
+		Addr:         ":" + cli.ListenAddress,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
+
+	// Listen and serve
+	go func() {
+		log.Printf("Server starting on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error().Err(err).Msg("Error starting HTTP server")
+		}
+	}()
+
+	// Handle shutdown
+	<-sigChan
+	log.Info().Msg("Shutdown Signal Received")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	log.Info().Msg("Shutting down HTTP server...")
+	_ = server.Shutdown(ctx)
+	log.Info().Msg("Stopping Metric Refresh ticker")
+	ticker.Stop()
+	log.Info().Msg("Shutdown Complete; Exiting...")
 }

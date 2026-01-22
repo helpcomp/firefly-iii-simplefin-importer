@@ -5,16 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/helpcomp/firefly-iii-simplefin-importer/httperror"
-	"github.com/shopspring/decimal"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-)
 
-func (f *Firefly) HandleTxn() {
-}
+	"github.com/helpcomp/firefly-iii-simplefin-importer/httperror"
+	"github.com/rs/zerolog/log"
+	"github.com/shopspring/decimal"
+)
 
 type TxnsResponse struct {
 	Data  []Transactions `json:"data"`
@@ -57,69 +57,18 @@ type updateRequest struct {
 }
 
 func (f *Firefly) CreateTransaction(t Transaction) error {
-	//
-	// Validate the request
-	//
-	// Verify that a provided category ID is valid. If only a category name is
-	// provided, add the ID. Allow an empty category (e.g. for a transfer).
-	if t.CategoryID != "" || t.CategoryName != "" {
-		cats, _ := f.CachedCategories()
-		var ok bool
-		for _, c := range cats {
-			if strconv.Itoa(c.ID) == t.CategoryID {
-				ok = true
-				break
-			}
-			if c.Name == t.CategoryName {
-				t.CategoryID = strconv.Itoa(c.ID)
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return fmt.Errorf("could not find Category with ID = '%s' or Name = '%s'", t.CategoryID, t.CategoryName)
-		}
-	}
-
-	// firefly internal dateFormat := "2006-01-02T15:04:05-07:00"
-	txnDate, err := time.Parse(time.DateOnly, t.Date)
+	// Validate the transaction (this modifies t.CategoryID and t.Type if needed)
+	txnDate, err := ValidateTransaction(&t, f)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Could not parse date '%s'", t.Date))
+		return err
 	}
 
-	if t.Description == "" {
-		return errors.New("description must be provided")
-	}
-
-	if t.SourceID == "" && t.SourceName == "" {
-		return errors.New("source_id or source_name must be provided")
-	}
-
-	if t.DestinationID == "" && t.DestinationName == "" {
-		return errors.New("destination_id or destination_name must be provided")
-	}
-
-	// If the user accidentally enters the same account for the source and
-	// destination, we will have an expense and a revenue account with the same
-	// name, and won't be able to create new transactions for either one!
-	if (t.DestinationID != "" && t.DestinationID == t.SourceID) || (t.DestinationName != "" && t.DestinationName == t.SourceName) {
-		return errors.New(fmt.Sprintf("source and destination accounts cannot be the same (got '%s' for both!)", t.DestinationName))
-	}
-
-	if t.Amount.IsZero() {
-		return errors.New("amount must be provided")
-	}
-
-	// Determine the transaction type
-	if t.Type == "" {
-		t.Type = f.calcTxnType(t.SourceID, t.SourceName, t.DestinationID, t.DestinationName)
-	}
-
+	// Additional check: ensure a transaction type was determined
 	if t.Type == "" {
 		return errors.New(fmt.Sprintf("Could not determine transaction type with provided account information: sourceID: %s, sourceName: %s; destID: %s, destName: %s\n", t.SourceID, t.SourceName, t.DestinationID, t.DestinationName))
 	}
 
-	// Send to the firefly API
+	// Send it to the firefly API
 	doc := createRequest{
 		ErrorIfDuplicate: false,
 		Transactions:     []Transaction{t},
@@ -139,18 +88,24 @@ func (f *Firefly) CreateTransaction(t Transaction) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return errors.New(fmt.Sprintf("Could not create transaction, got status %d %s", resp.StatusCode, resp.Status))
 	}
 
-	// Check for successful response
+	// Check for a successful response
 	var result struct {
 		Data Transactions `json:"data"`
 	}
 
-	json.NewDecoder(resp.Body).Decode(&result)
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		return err
+	}
+
 	if result.Data.ID == "" {
 		return errors.New(fmt.Sprintf("Could not create transaction"))
 	}
@@ -163,12 +118,12 @@ func (f *Firefly) CreateTransaction(t Transaction) error {
 		Start:      txnDate,
 		End:        txnDate,
 	}
-	f.invalidateTransactionsCache() // since user is going to txns page next, update now
+	f.invalidateTransactionsCache() // since the user is going to txns page next, update now
 	go func() {                     // we can update other caches after returning
 		f.refreshCategoryTxnCache(key)
 		_ = f.refreshAccounts()
 	}()
-	// Successful txn creation should redirect the client to the transactions page
+	// Successful txn creation should redirect the client to the transaction page
 	return nil
 }
 
@@ -190,7 +145,9 @@ func (f *Firefly) DeleteTransaction(transID string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	// Error deleting transaction
 	if resp.StatusCode != http.StatusNoContent {
@@ -208,66 +165,13 @@ func (f *Firefly) UpdateTransaction(transID string, t Transaction) error {
 		return errors.New("missing Transaction ID")
 	}
 
-	//
-	// Validate the request
-	//
-	// Verify that a provided category ID is valid. If only a category name is
-	// provided, add the ID. Allow an empty category (e.g. for a transfer).
-	if t.CategoryID != "" || t.CategoryName != "" {
-		cats, _ := f.CachedCategories()
-		var ok bool
-		for _, c := range cats {
-			if strconv.Itoa(c.ID) == t.CategoryID {
-				ok = true
-				break
-			}
-			if c.Name == t.CategoryName {
-				t.CategoryID = strconv.Itoa(c.ID)
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return errors.New(fmt.Sprintf("Could not find Category with ID = '%s' or Name = '%s'", t.CategoryID, t.CategoryName))
-		}
-	}
-
-	// firefly internal dateFormat := "2006-01-02T15:04:05-07:00"
-	txnDate, err := time.Parse(time.DateOnly, t.Date)
+	// Validate the transaction (this modifies t.CategoryID and t.Type if needed)
+	txnDate, err := ValidateTransaction(&t, f)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Could not parse date '%s'", t.Date))
+		return err
 	}
 
-	if t.Description == "" {
-		return errors.New("description must be provided")
-	}
-
-	if t.SourceID == "" && t.SourceName == "" {
-		return errors.New("source_id or source_name must be provided")
-	}
-
-	if t.DestinationID == "" && t.DestinationName == "" {
-		return errors.New("destination_id or destination_name must be provided")
-	}
-
-	// If the user accidentally enters the same account for the source and
-	// destination, we will have an expense and a revenue account with the same
-	// name, and won't be able to create new transactions for either one!
-	if (t.DestinationID != "" && t.DestinationID == t.SourceID) || (t.DestinationName != "" && t.DestinationName == t.SourceName) {
-		return errors.New(fmt.Sprintf("source and destination accounts cannot be the same (got '%s' for both!)", t.DestinationName))
-	}
-
-	if t.Amount.IsZero() {
-		return errors.New("amount must be provided")
-	}
-
-	// Determine the transaction type
-	t.Type = f.calcTxnType(t.SourceID, t.SourceName, t.DestinationID, t.DestinationName)
-	if t.Type == "" {
-		return errors.New(fmt.Sprintf("Could not determine transaction type with provided account information: sourceID: %s, sourceName: %s; destID: %s, destName: %s\n", t.SourceID, t.SourceName, t.DestinationID, t.DestinationName))
-	}
-
-	// Send to the firefly API
+	// Send it to the firefly API
 	doc := updateRequest{
 		Transactions: []Transaction{t},
 	}
@@ -286,13 +190,15 @@ func (f *Firefly) UpdateTransaction(transID string, t Transaction) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return errors.New(fmt.Sprintf("Could not update transaction, got status %d %s", resp.StatusCode, resp.Status))
 	}
 
-	// Check for successful response
+	// Check for a successful response
 	var result struct {
 		Data Transactions `json:"data"`
 	}
@@ -313,12 +219,12 @@ func (f *Firefly) UpdateTransaction(transID string, t Transaction) error {
 		Start:      txnDate,
 		End:        txnDate,
 	}
-	f.invalidateTransactionsCache() // since user is going to txns page next, update now
+	f.invalidateTransactionsCache() // since the user is going to txns page next, update now
 	go func() {                     // we can update other caches after returning
 		f.refreshCategoryTxnCache(key)
 		_ = f.refreshAccounts()
 	}()
-	// Successful txn creation should redirect the client to the transactions page
+	// Successful txn creation should redirect the client to the transaction page
 	return nil
 }
 
@@ -330,29 +236,19 @@ func (f *Firefly) resolveAccount(id, name string) (string, string) {
 		return id, name
 	}
 
-	accts, _ := f.CachedAccounts()
+	accounts, err := f.CachedAccounts()
 
-	// Name provided, ID missing
-	if id == "" && name != "" {
-		for _, a := range accts {
-			if a.Attributes.Name != name {
-				continue
-			}
-			return a.ID, name
-		}
+	if err != nil {
+		log.Error().Err(err).Msgf("Could not get cached accounts")
+		return id, name
 	}
 
-	// ID provided, name missing
-	if id != "" && name == "" {
-		for _, a := range accts {
-			if a.ID != id {
-				continue
-			}
-			return id, a.Attributes.Name
-		}
+	// Name provided
+	if id == "" {
+		return accounts.AccountsByName[name].ID, name
 	}
 
-	return id, name
+	return accounts.AccountsByID[id].Attributes.Name, id
 }
 
 const (
@@ -372,9 +268,14 @@ func (f *Firefly) calcTxnType(srcID, srcName, destID, destName string) string {
 	srcID, srcName = f.resolveAccount(srcID, srcName)
 	destID, destName = f.resolveAccount(destID, destName)
 	var srcType, destType string
-	accts, _ := f.CachedAccounts()
+	acts, err := f.CachedAccounts()
+	if err != nil {
+		log.Error().Err(err).Msgf("Error getting cached accounts")
+		return ""
+	}
+
 	// Find type of existing accounts
-	for _, a := range accts {
+	for _, a := range acts.Accounts {
 		switch a.ID {
 		case srcID:
 			srcType = a.Attributes.Type
@@ -392,7 +293,7 @@ func (f *Firefly) calcTxnType(srcID, srcName, destID, destName string) string {
 	if destType == "" && destName != "" && srcType == AcctTypeAsset {
 		destType = AcctTypeExpense
 	}
-	// Determine transaction type
+	// Determine a transaction type
 	if srcType == AcctTypeAsset && (destType == AcctTypeExpense || destType == AcctTypeRevenue) {
 		return "withdrawal"
 	} else if (srcType == AcctTypeRevenue || srcType == AcctTypeExpense) && destType == AcctTypeAsset {
@@ -411,7 +312,7 @@ func (f *Firefly) listTxns(w http.ResponseWriter, req *http.Request) {
 	)
 	pageStr, ok := req.URL.Query()["page"]
 	if ok && len(pageStr) > 0 {
-		page, _ = strconv.Atoi(pageStr[0]) // if page cannot be parsed, we'll return page 1
+		page, _ = strconv.Atoi(pageStr[0]) // if the page cannot be parsed, we'll return page 1
 	}
 
 	startStr, ok := req.URL.Query()["start"]
@@ -437,7 +338,10 @@ func (f *Firefly) listTxns(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(txns)
+	err = json.NewEncoder(w).Encode(txns)
+	if err != nil {
+		return
+	}
 }
 
 func (f *Firefly) ListTransactions(key TransactionsKey) ([]Transactions, error) {
@@ -470,19 +374,22 @@ func (f *Firefly) ListTransactions(key TransactionsKey) ([]Transactions, error) 
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch Transactions: %s", err)
 		}
-		defer resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("got status %d", resp.StatusCode)
 		}
 
 		var txns TxnsResponse
-		json.NewDecoder(resp.Body).Decode(&txns)
+		err = json.NewDecoder(resp.Body).Decode(&txns)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
 
 		results = append(results, txns.Data...)
 		more = txns.Meta.Pagination.CurrentPage < txns.Meta.Pagination.TotalPages
 	}
-
 	return results, nil
 }
 
@@ -501,17 +408,19 @@ func (f *Firefly) ListTransactionsNew(key TransactionsKey) (TxnsResponse, error)
 	if err != nil {
 		return TxnsResponse{}, fmt.Errorf("failed to fetch Transactions: %s", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return TxnsResponse{}, fmt.Errorf("got status %d", resp.StatusCode)
 	}
 
 	var txns TxnsResponse
-	json.NewDecoder(resp.Body).Decode(&txns)
-
-	//results = append(results, txns)
-
+	err = json.NewDecoder(resp.Body).Decode(&txns)
+	if err != nil {
+		return TxnsResponse{}, err
+	}
 	return txns, nil
 }
 
@@ -529,7 +438,11 @@ func (f *Firefly) fetchTxn(w http.ResponseWriter, req *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(txn)
+	err = json.NewEncoder(w).Encode(txn)
+	if err != nil {
+		log.Error().Err(err).Msgf("Could not encode transaction")
+		return
+	}
 }
 
 func (f *Firefly) FetchTransaction(id string) (*Transactions, error) {
@@ -541,7 +454,9 @@ func (f *Firefly) FetchTransaction(id string) (*Transactions, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch Transaction: %s", err)
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("got status %d", resp.StatusCode)
@@ -550,11 +465,81 @@ func (f *Firefly) FetchTransaction(id string) (*Transactions, error) {
 	var result struct {
 		Data Transactions `json:"data"`
 	}
-	json.NewDecoder(resp.Body).Decode(&result)
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		return nil, err
+	}
 
 	if result.Data.ID == "" {
 		return nil, fmt.Errorf("no transaction found")
 	}
 
 	return &result.Data, nil
+}
+
+func ValidateTransaction(t *Transaction, f *Firefly) (time.Time, error) {
+	//
+	// Validate the request
+	//
+	// Verify that a provided category ID is valid. If only a category name is
+	// provided, add the ID. Allow an empty category (e.g., for a transfer).
+	if t.CategoryID != "" || t.CategoryName != "" {
+		cats, err := f.CachedCategories()
+
+		if err != nil {
+			log.Error().Err(err).Msgf("Error getting cached categories")
+			return time.Now(), err
+		}
+
+		var ok bool
+		for _, c := range cats {
+			if strconv.Itoa(c.ID) == t.CategoryID {
+				ok = true
+				break
+			}
+			if c.Name == t.CategoryName {
+				t.CategoryID = strconv.Itoa(c.ID)
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return time.Now(), fmt.Errorf("could not find Category with ID = '%s' or Name = '%s'", t.CategoryID, t.CategoryName)
+		}
+	}
+
+	// firefly internal dateFormat := "2006-01-02T15:04:05-07:00"
+	txnDate, err := time.Parse(time.DateOnly, t.Date)
+	if err != nil {
+		return time.Now(), errors.New(fmt.Sprintf("Could not parse date '%s'", t.Date))
+	}
+
+	if t.Description == "" {
+		return txnDate, errors.New("description must be provided")
+	}
+
+	if t.SourceID == "" && t.SourceName == "" {
+		return txnDate, errors.New("source_id or source_name must be provided")
+	}
+
+	if t.DestinationID == "" && t.DestinationName == "" {
+		return txnDate, errors.New("destination_id or destination_name must be provided")
+	}
+
+	// If the user accidentally enters the same account for the source and
+	// destination, we will have an expense and a revenue account with the same
+	// name and won't be able to create new transactions for either one!
+	if (t.DestinationID != "" && t.DestinationID == t.SourceID) || (t.DestinationName != "" && t.DestinationName == t.SourceName) {
+		return txnDate, errors.New(fmt.Sprintf("source and destination accounts cannot be the same (got '%s' for both!)", t.DestinationName))
+	}
+
+	if t.Amount.IsZero() {
+		return txnDate, errors.New("amount must be provided")
+	}
+
+	// Determine the transaction type
+	if t.Type == "" {
+		t.Type = f.calcTxnType(t.SourceID, t.SourceName, t.DestinationID, t.DestinationName)
+	}
+	return txnDate, nil
 }
