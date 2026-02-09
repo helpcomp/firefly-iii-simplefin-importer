@@ -91,9 +91,12 @@ func main() {
 	ticker := time.NewTicker(time.Duration(cli.RefreshTime) * time.Minute)
 	quit := make(chan struct{})
 
+	exporter := prom.NewExporter(AppName, ff, cfg, simplefinAccounts)
+
 	// Immediately start a refresh of the data in the background
 	go func() {
 		simplefinAccounts = startUpdate(sf, ff, cfg, oai)
+		exporter.InvalidateCache()
 	}()
 
 	// No Prometheus Support, refresh only
@@ -103,6 +106,7 @@ func main() {
 			select {
 			case <-ticker.C:
 				simplefinAccounts = startUpdate(sf, ff, cfg, oai)
+				exporter.InvalidateCache()
 			case <-quit:
 				ticker.Stop()
 				return
@@ -120,6 +124,7 @@ func main() {
 			select {
 			case <-ticker.C:
 				simplefinAccounts = startUpdate(sf, ff, cfg, oai)
+				exporter.InvalidateCache()
 			case <-quit:
 				ticker.Stop()
 				return
@@ -130,7 +135,7 @@ func main() {
 	// Metric Registration
 	prometheus.MustRegister(
 		versioncollector.NewCollector(AppName),
-		prom.NewExporter(AppName, ff, cfg, simplefinAccounts),
+		exporter,
 	)
 
 	// HTTP Server

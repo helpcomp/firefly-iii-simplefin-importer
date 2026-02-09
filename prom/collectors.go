@@ -99,37 +99,67 @@ func (e *Exporter) CollectAccounts(ch chan<- prometheus.Metric) {
 
 // collectAccountTransactions Scrapes Firefly for Account Transactions based on the given account ID
 func (e *Exporter) collectAccountTransactions(id string, name string, acctType string, ch chan<- prometheus.Metric) {
-	accountTrans, _ := e.ff.ListAccountTransactions(id)
+	e.txnCache.mu.RLock()
+	cachedCount, exists := e.txnCache.counts[id]
+	e.txnCache.mu.RUnlock()
+
+	if !exists {
+		accountTrans, err := e.ff.ListAccountTransactions(id)
+		if err != nil {
+			return
+		}
+		e.txnCache.mu.Lock()
+		e.txnCache.counts[id] = accountTrans.Meta.Pagination.Total
+		e.txnCache.mu.Unlock()
+		cachedCount = accountTrans.Meta.Pagination.Total
+	}
 
 	ch <- prometheus.MustNewConstMetric(
 		e.AccountTransactions,
 		prometheus.CounterValue,
-		float64(accountTrans.Meta.Pagination.Total),
+		float64(cachedCount),
 		id, name, acctType,
 	)
 }
 
 // collectCategoryTransactions Scrapes Firefly for Category Transactions based on the given category ID
 func (e *Exporter) collectCategoryTransactions(id int, name string, ch chan<- prometheus.Metric) {
-	categoryTrans, _ := e.ff.ListCategoryTransactions(id)
-	CatAmt := decimal.Decimal{}
+	e.catCache.mu.RLock()
+	cachedCount, exists := e.catCache.counts[id]
+	cachedBalance := e.catCache.balances[id]
+	e.catCache.mu.RUnlock()
 
-	for _, categoryTransP := range categoryTrans.Data {
-		for _, catTransC := range categoryTransP.Attributes.Transactions {
-			CatAmt = CatAmt.Add(catTransC.Amount)
+	if !exists {
+		categoryTrans, err := e.ff.ListCategoryTransactions(id)
+		if err != nil {
+			return
 		}
+		catAmt := decimal.Decimal{}
+		for _, categoryTransP := range categoryTrans.Data {
+			for _, catTransC := range categoryTransP.Attributes.Transactions {
+				catAmt = catAmt.Add(catTransC.Amount)
+			}
+		}
+
+		e.catCache.mu.Lock()
+		e.catCache.counts[id] = categoryTrans.Meta.Pagination.Total
+		e.catCache.balances[id] = catAmt
+		e.catCache.mu.Unlock()
+
+		cachedCount = categoryTrans.Meta.Pagination.Total
+		cachedBalance = catAmt
 	}
 
 	ch <- prometheus.MustNewConstMetric(
 		e.categoryActivity,
 		prometheus.GaugeValue,
-		float64(categoryTrans.Meta.Pagination.Total),
+		float64(cachedCount),
 		name,
 	)
 	ch <- prometheus.MustNewConstMetric(
 		e.categoryBalance,
 		prometheus.GaugeValue,
-		CatAmt.InexactFloat64(),
+		cachedBalance.InexactFloat64(),
 		name,
 	)
 }

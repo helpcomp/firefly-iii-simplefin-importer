@@ -1,11 +1,52 @@
 package prom
 
 import (
+	"sync"
+
 	"github.com/helpcomp/firefly-iii-simplefin-importer/config"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/firefly"
 	"github.com/helpcomp/firefly-iii-simplefin-importer/simplefin"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/shopspring/decimal"
 )
+
+// TransactionCache stores cached transaction counts per account
+type TransactionCache struct {
+	mu     sync.RWMutex
+	counts map[string]int // accountID -> total transaction count
+}
+
+func NewTransactionCache() *TransactionCache {
+	return &TransactionCache{
+		counts: make(map[string]int),
+	}
+}
+
+// CategoryCache stores cached category transaction counts and balances
+type CategoryCache struct {
+	mu       sync.RWMutex
+	counts   map[int]int             // categoryID -> total transaction count
+	balances map[int]decimal.Decimal // categoryID -> total balance
+}
+
+func NewCategoryCache() *CategoryCache {
+	return &CategoryCache{
+		counts:   make(map[int]int),
+		balances: make(map[int]decimal.Decimal),
+	}
+}
+
+// InvalidateCache clears both transaction and category caches
+func (e *Exporter) InvalidateCache() {
+	e.txnCache.mu.Lock()
+	e.txnCache.counts = make(map[string]int)
+	e.txnCache.mu.Unlock()
+
+	e.catCache.mu.Lock()
+	e.catCache.counts = make(map[int]int)
+	e.catCache.balances = make(map[int]decimal.Decimal)
+	e.catCache.mu.Unlock()
+}
 
 type Exporter struct {
 	AccountTransactions   *prometheus.Desc
@@ -23,6 +64,8 @@ type Exporter struct {
 	ff                    *firefly.Firefly
 	SimpleFinAccounts     []simplefin.Accounts
 	config                *config.MasterConfig
+	txnCache              *TransactionCache
+	catCache              *CategoryCache
 }
 
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
@@ -128,6 +171,8 @@ func NewExporter(namespace string, newFireFly *firefly.Firefly, config *config.M
 		ff:                newFireFly,
 		config:            config,
 		SimpleFinAccounts: accounts,
+		txnCache:          NewTransactionCache(),
+		catCache:          NewCategoryCache(),
 	}
 }
 
